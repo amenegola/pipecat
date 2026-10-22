@@ -1034,6 +1034,27 @@ class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(other.frames), 2)
 
+    async def test_votes_are_pending_while_a_voting_turn_is_open(self):
+        await self._start([VotingStopStrategy(), VotingStopStrategy()])
+        self.assertFalse(self.controller.user_turn_stop_votes_pending)
+
+        await self._speak()
+        self.assertTrue(self.controller.user_turn_stop_votes_pending)
+
+    async def test_no_votes_are_pending_with_a_single_stop_strategy(self):
+        await self._start([VotingStopStrategy()])
+        await self._speak()
+
+        self.assertFalse(self.controller.user_turn_stop_votes_pending)
+
+    async def test_no_votes_are_pending_when_the_first_decision_wins(self):
+        await self._start(
+            [VotingStopStrategy(), VotingStopStrategy()], stop_mode=StrategyMode.FIRST
+        )
+        await self._speak()
+
+        self.assertFalse(self.controller.user_turn_stop_votes_pending)
+
     async def test_the_turn_end_combines_the_votes(self):
         """A turn end announced elsewhere, or confirming a speculation, holds for the turn."""
         announced, confirming = VotingStopStrategy(), VotingStopStrategy()

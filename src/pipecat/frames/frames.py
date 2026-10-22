@@ -762,10 +762,15 @@ class LLMContextFrame(Frame):
             provisional context that is not part of the conversation. Its
             response must not reach the user or the context until the turn is
             confirmed, and the service must not execute tool calls for it.
+        held: Whether the response must wait for the user turn to end, because
+            the turn's stop strategies are still voting on it. Unlike a
+            speculation, the inference runs on the conversation itself and its
+            tool calls go ahead.
     """
 
     context: LLMContext
     speculation: bool = False
+    held: bool = False
 
 
 @dataclass

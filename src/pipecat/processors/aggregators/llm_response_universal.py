@@ -541,13 +541,18 @@ class LLMContextAggregator(FrameProcessor):
         """
         return LLMContextFrame(context=self._context)
 
-    async def push_context_frame(self, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+    async def push_context_frame(
+        self, direction: FrameDirection = FrameDirection.DOWNSTREAM, *, held: bool = False
+    ):
         """Push a context frame in the specified direction.
 
         Args:
             direction: The direction to push the frame (upstream or downstream).
+            held: Whether the response must wait for the user turn to end. See
+                :class:`~pipecat.frames.frames.LLMContextFrame`.
         """
         frame = self._get_context_frame()
+        frame.held = held
         await self.push_frame(frame, direction)
 
     def add_messages(self, messages):
@@ -987,7 +992,10 @@ class LLMUserAggregator(LLMContextAggregator):
             LLMContextUserTurnFrame, text=aggregation, timestamp=self._user_turn_start_timestamp
         )
         if run_llm:
-            await self.push_context_frame()
+            # The turn's answer waits for every stop vote to be in.
+            await self.push_context_frame(
+                held=self._user_turn_controller.user_turn_stop_votes_pending
+            )
 
         message = UserTurnMessageAddedMessage(
             content=aggregation, timestamp=self._user_turn_start_timestamp
@@ -1999,13 +2007,16 @@ class LLMAssistantAggregator(LLMContextAggregator):
 
         return aggregation
 
-    async def push_context_frame(self, direction: FrameDirection = FrameDirection.DOWNSTREAM):
+    async def push_context_frame(
+        self, direction: FrameDirection = FrameDirection.DOWNSTREAM, *, held: bool = False
+    ):
         """Push a context frame in the specified direction.
 
         Args:
             direction: The direction to push the frame (upstream or downstream).
+            held: Whether the response must wait for the user turn to end.
         """
-        await super().push_context_frame(direction)
+        await super().push_context_frame(direction, held=held)
         self._push_context_on_bot_stopped_speaking = False
         self._context_push_owed = False
 

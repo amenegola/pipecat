@@ -196,6 +196,20 @@ class UserTurnController(BaseObject):
         await self._setup_strategies()
 
     @property
+    def user_turn_stop_votes_pending(self) -> bool:
+        """Whether a turn is open whose end waits for several stop strategies' votes.
+
+        An answer generated meanwhile is held until every vote is in. With a
+        single stop strategy, the vote that starts the answer also ends the
+        turn, so nothing waits.
+        """
+        return (
+            self._stop_strategies_vote
+            and self._user_turn
+            and len(self._user_turn_strategies.stop or []) > 1
+        )
+
+    @property
     def resolves_proposed_turn_start_frames(self) -> bool:
         """Whether any active start strategy resolves proposed turn starts.
 

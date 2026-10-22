@@ -58,6 +58,7 @@ from pipecat.frames.frames import (
     UserMuteStartedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserTurnInferenceCompletedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -90,6 +91,7 @@ from pipecat.turns.user_start import (
     VADUserTurnStartStrategy,
 )
 from pipecat.turns.user_stop import (
+    ExternalUserTurnCompletionStopStrategy,
     ExternalUserTurnStopStrategy,
     SpeechTimeoutUserTurnStopStrategy,
     TurnAnalyzerUserTurnStopStrategy,
@@ -98,6 +100,7 @@ from pipecat.turns.user_turn_strategies import (
     ExternalUserTurnStrategies,
     FilterIncompleteUserTurnStrategies,
     MergeMode,
+    StrategyMode,
     UserTurnStrategies,
     UserTurnStrategiesParams,
 )
@@ -432,6 +435,61 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
             [type(s) for s in strategies.stop or []],
             [TurnAnalyzerUserTurnStopStrategy, SpeechTimeoutUserTurnStopStrategy],
         )
+
+    async def _run_voting_turn(self, stop_mode: StrategyMode, *, last_vote: list[Frame]):
+        """Run a turn that speech timeout votes done on, then send the last vote."""
+        user_aggregator = LLMUserAggregator(
+            LLMContext(),
+            params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[
+                        SpeechTimeoutUserTurnStopStrategy(
+                            user_speech_timeout=TRANSCRIPTION_TIMEOUT
+                        ),
+                        ExternalUserTurnCompletionStopStrategy(),
+                    ],
+                ),
+                user_turn_strategies_params=UserTurnStrategiesParams(stop_mode=stop_mode),
+            ),
+        )
+        down, _ = await run_test(
+            user_aggregator,
+            frames_to_send=[
+                VADUserStartedSpeakingFrame(),
+                TranscriptionFrame(text="Hi", user_id="", timestamp="now"),
+                SleepFrame(),
+                VADUserStoppedSpeakingFrame(),
+                SleepFrame(sleep=TRANSCRIPTION_TIMEOUT + 0.1),
+                *last_vote,
+                SleepFrame(),
+            ],
+        )
+        return down
+
+    async def test_an_answer_is_held_while_stop_votes_are_pending(self):
+        """The turn stays open on one vote, and its inference is held."""
+        down = await self._run_voting_turn(StrategyMode.ALL, last_vote=[])
+
+        (context_frame,) = [f for f in down if isinstance(f, LLMContextFrame)]
+        self.assertTrue(context_frame.held)
+        self.assertFalse(any(isinstance(f, UserStoppedSpeakingFrame) for f in down))
+
+    async def test_the_last_vote_ends_the_turn(self):
+        """The turn end that releases the held answer comes with the last vote."""
+        down = await self._run_voting_turn(
+            StrategyMode.ALL, last_vote=[UserTurnInferenceCompletedFrame()]
+        )
+
+        (context_frame,) = [f for f in down if isinstance(f, LLMContextFrame)]
+        self.assertTrue(context_frame.held)
+        self.assertTrue(any(isinstance(f, UserStoppedSpeakingFrame) for f in down))
+
+    async def test_an_answer_is_not_held_when_the_first_decision_wins(self):
+        down = await self._run_voting_turn(StrategyMode.FIRST, last_vote=[])
+
+        (context_frame,) = [f for f in down if isinstance(f, LLMContextFrame)]
+        self.assertFalse(context_frame.held)
+        self.assertTrue(any(isinstance(f, UserStoppedSpeakingFrame) for f in down))
 
     async def test_proposed_frames_produce_turn_frames_and_interruption(self):
         """A proposal leaves the decision here, so the aggregator emits."""
