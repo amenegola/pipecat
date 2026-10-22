@@ -543,17 +543,21 @@ class LLMContextAggregator(FrameProcessor):
 
     async def push_context_frame(
         self, direction: FrameDirection = FrameDirection.DOWNSTREAM, *, held: bool = False
-    ):
+    ) -> LLMContextFrame:
         """Push a context frame in the specified direction.
 
         Args:
             direction: The direction to push the frame (upstream or downstream).
             held: Whether the response must wait for the user turn to end. See
                 :class:`~pipecat.frames.frames.LLMContextFrame`.
+
+        Returns:
+            The frame pushed.
         """
         frame = self._get_context_frame()
         frame.held = held
         await self.push_frame(frame, direction)
+        return frame
 
     def add_messages(self, messages):
         """Add messages to the context.
@@ -993,9 +997,12 @@ class LLMUserAggregator(LLMContextAggregator):
         )
         if run_llm:
             # The turn's answer waits for every stop vote to be in.
-            await self.push_context_frame(
+            frame = await self.push_context_frame(
                 held=self._user_turn_controller.user_turn_stop_votes_pending
             )
+            # A stop strategy judging the answer, such as
+            # LLMTurnCompletionUserTurnStopStrategy, waits for this inference.
+            await self._user_turn_controller.process_frame(frame)
 
         message = UserTurnMessageAddedMessage(
             content=aggregation, timestamp=self._user_turn_start_timestamp
@@ -2015,10 +2022,14 @@ class LLMAssistantAggregator(LLMContextAggregator):
         Args:
             direction: The direction to push the frame (upstream or downstream).
             held: Whether the response must wait for the user turn to end.
+
+        Returns:
+            The frame pushed.
         """
-        await super().push_context_frame(direction, held=held)
+        frame = await super().push_context_frame(direction, held=held)
         self._push_context_on_bot_stopped_speaking = False
         self._context_push_owed = False
+        return frame
 
     async def _handle_llm_run(self, frame: LLMRunFrame):
         await self.push_context_frame(FrameDirection.UPSTREAM)
