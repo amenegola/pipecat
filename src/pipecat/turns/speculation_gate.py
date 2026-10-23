@@ -151,6 +151,16 @@ class SpeculationGate:
         """
         return self._speculating
 
+    @property
+    def is_held(self) -> bool:
+        """Whether the inference in flight waits for its turn's stop strategies to vote.
+
+        Set from :meth:`begin_speculation` until the turn ends, the response is
+        released or it is discarded. Unlike a speculation, its side effects go
+        ahead.
+        """
+        return self._held
+
     def begin_speculation(self, speculation: bool, *, held: bool = False):
         """Take note of an inference whose turn may not have ended.
 

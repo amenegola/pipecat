@@ -201,6 +201,14 @@ class TestHeldResponses(unittest.IsolatedAsyncioTestCase):
         assert types(emit(gate, UserTurnResponseCancelFrame())) == [UserTurnResponseCancelFrame]
         assert types(emit(gate, UserStoppedSpeakingFrame())) == [UserStoppedSpeakingFrame]
 
+    async def test_a_held_response_is_held_until_its_turn_ends(self):
+        gate = SpeculationGate()
+
+        gate.begin_speculation(False, held=True)
+        assert gate.is_held
+        emit(gate, UserStoppedSpeakingFrame())
+        assert not gate.is_held
+
     async def test_a_held_response_is_not_speculative(self):
         gate = SpeculationGate()
 
@@ -489,6 +497,27 @@ class TestGatedPipeline(unittest.IsolatedAsyncioTestCase):
         spoken = [call.args[0] for call in transport._handle_frame.await_args_list]
         assert [f.text for f in spoken if isinstance(f, LLMTextFrame)] == ["Booking your flight."]
         assert context.messages == [{"role": "user", "content": "Book a flight."}]
+
+
+class TestCancellingAResponse(unittest.IsolatedAsyncioTestCase):
+    """The LLM stops generating a response whose turn turned out to be unfinished."""
+
+    async def _cancel(self, *, speculation: bool, held: bool) -> AsyncMock:
+        llm = GatedLLM()
+        interruption = AsyncMock()
+        llm._start_interruption = interruption
+        llm._speculation_gate.begin_speculation(speculation, held=held)
+        await llm._handle_user_turn_response_cancel(UserTurnResponseCancelFrame())
+        return interruption
+
+    async def test_a_held_response_stops_generating(self):
+        (await self._cancel(speculation=False, held=True)).assert_awaited_once()
+
+    async def test_a_speculation_stops_generating(self):
+        (await self._cancel(speculation=True, held=False)).assert_awaited_once()
+
+    async def test_an_ordinary_response_keeps_generating(self):
+        (await self._cancel(speculation=False, held=False)).assert_not_awaited()
 
 
 if __name__ == "__main__":

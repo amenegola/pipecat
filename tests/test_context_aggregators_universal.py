@@ -59,6 +59,7 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     UserTurnInferenceCompletedFrame,
+    UserTurnResponseCancelFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -483,6 +484,15 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         (context_frame,) = [f for f in down if isinstance(f, LLMContextFrame)]
         self.assertTrue(context_frame.held)
         self.assertTrue(any(isinstance(f, UserStoppedSpeakingFrame) for f in down))
+
+    async def test_new_speech_drops_the_held_answer(self):
+        """The user speaking again voids the answer held for the votes cast so far."""
+        down = await self._run_voting_turn(
+            StrategyMode.ALL, last_vote=[VADUserStartedSpeakingFrame()]
+        )
+
+        self.assertTrue(any(isinstance(f, UserTurnResponseCancelFrame) for f in down))
+        self.assertFalse(any(isinstance(f, UserStoppedSpeakingFrame) for f in down))
 
     async def test_an_answer_is_not_held_when_the_first_decision_wins(self):
         down = await self._run_voting_turn(StrategyMode.FIRST, last_vote=[])

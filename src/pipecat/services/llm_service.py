@@ -986,11 +986,11 @@ class LLMService(UserTurnCompletionLLMServiceMixin, AIService, Generic[TAdapter]
         never spoke, and the user is still mid-turn.
         """
         # Runs before the frame reaches the gate, which is what clears the
-        # speculation, so this still sees the one being withdrawn.
-        if not self._speculation_gate.is_speculating:
+        # speculation or hold, so this still sees the one being withdrawn.
+        if not (self._speculation_gate.is_speculating or self._speculation_gate.is_held):
             return
 
-        logger.debug(f"{self}: eager end of turn withdrawn, stopping the speculative inference")
+        logger.debug(f"{self}: user turn response cancelled, stopping its inference")
         await self._start_interruption()
         await self.stop_all_metrics()
 

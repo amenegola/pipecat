@@ -1055,6 +1055,24 @@ class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(self.controller.user_turn_stop_votes_pending)
 
+    async def test_new_speech_clearing_votes_is_reported(self):
+        first, last = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([first, last])
+        cleared = 0
+
+        @self.controller.event_handler("on_user_turn_stop_votes_cleared")
+        async def on_user_turn_stop_votes_cleared(controller):
+            nonlocal cleared
+            cleared += 1
+
+        await self._speak()
+        await self._speak()
+        self.assertEqual(cleared, 0)
+
+        await first.vote()
+        await self._speak()
+        self.assertEqual(cleared, 1)
+
     async def test_the_turn_end_combines_the_votes(self):
         """A turn end announced elsewhere, or confirming a speculation, holds for the turn."""
         announced, confirming = VotingStopStrategy(), VotingStopStrategy()

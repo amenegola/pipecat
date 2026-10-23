@@ -812,6 +812,9 @@ class LLMUserAggregator(LLMContextAggregator):
             "on_user_turn_speculation_cancelled", self._on_user_turn_speculation_cancelled
         )
         self._user_turn_controller.add_event_handler(
+            "on_user_turn_stop_votes_cleared", self._on_user_turn_stop_votes_cleared
+        )
+        self._user_turn_controller.add_event_handler(
             "on_user_turn_started", self._on_user_turn_started
         )
         self._user_turn_controller.add_event_handler(
@@ -1406,6 +1409,12 @@ class LLMUserAggregator(LLMContextAggregator):
 
     async def _on_broadcast_frame(self, controller, frame_cls: type[Frame], **kwargs):
         await self._queued_broadcast_frame(frame_cls, **kwargs)
+
+    async def _on_user_turn_stop_votes_cleared(self, controller):
+        # The user is still talking, so the answer held for the votes cast so
+        # far is void. Broadcast so it reaches a downstream gate ahead of
+        # anything queued.
+        await self.broadcast_frame(UserTurnResponseCancelFrame)
 
     async def _on_user_turn_speculation_cancelled(self, controller):
         # Broadcast rather than queued, so it reaches a downstream gate ahead of
