@@ -60,8 +60,8 @@ class UserTurnController(BaseObject):
     - on_user_turn_inference_triggered: Emitted when enough signal exists to
       start LLM inference, carrying a `UserTurnSpeculation` when the turn it
       answers hasn't ended yet. Fires together with `on_user_turn_stopped` for
-      most strategies; fires alone when a downstream strategy gates
-      finalization on the LLM's verdict.
+      most strategies; fires alone when a strategy starts an answer before it
+      decides the user is done, as an eager end of turn does.
     - on_user_turn_stopped: Emitted when a user turn is semantically final.
     - on_user_turn_stop_votes_cleared: Emitted when the user speaking again
       clears the stop votes cast in an open turn, voiding the answer generated
