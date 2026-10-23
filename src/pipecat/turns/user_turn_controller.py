@@ -7,6 +7,7 @@
 """This module defines a controller for managing user turn lifecycle."""
 
 import asyncio
+from dataclasses import replace
 
 from pipecat.frames.frames import (
     Frame,
@@ -16,6 +17,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    UserTurnResponseCancelFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -50,7 +52,7 @@ class UserTurnController(BaseObject):
     with ``StrategyMode.ALL``, the default, each stop strategy's decision is a
     vote and the turn ends once every one has voted, and with
     ``StrategyMode.FIRST`` the first stop strategy to decide the user is done
-    ends it.
+    ends it. A cancelled answer voids the votes cast on it.
 
     Event handlers available:
 
@@ -128,6 +130,9 @@ class UserTurnController(BaseObject):
 
         self._user_turn = False
         self._user_turn_stop_votes: dict[BaseUserTurnStopStrategy, UserTurnStoppedParams] = {}
+        # Whether the turn's answer in flight is a speculation, so a vote
+        # confirming one that was withdrawn meanwhile is told apart.
+        self._user_turn_speculating = False
         self._user_turn_stop_timeout_event = asyncio.Event()
         self._user_turn_stop_timeout_task: asyncio.Task | None = None
 
@@ -269,6 +274,11 @@ class UserTurnController(BaseObject):
             if result == ProcessFrameResult.STOP and not self._stop_strategies_vote:
                 break
 
+        # Handled once the stop strategies have seen it, so an inference started
+        # here is the one they then wait for.
+        if isinstance(frame, UserTurnResponseCancelFrame):
+            await self._handle_user_turn_response_cancel()
+
     @property
     def _stop_strategies_vote(self) -> bool:
         return self._user_turn_strategies_params.stop_mode == StrategyMode.ALL
@@ -362,6 +372,20 @@ class UserTurnController(BaseObject):
         # The user stopped talking, let's reset the user turn timeout.
         self._user_turn_stop_timeout_event.set()
 
+    async def _handle_user_turn_response_cancel(self):
+        # The votes cast on the cancelled answer no longer hold. A vote that
+        # confirmed it still says the user is done, so the turn's answer runs
+        # again for it.
+        self._user_turn_speculating = False
+        confirmed = {
+            strategy: replace(params, confirms_speculation=False)
+            for strategy, params in self._user_turn_stop_votes.items()
+            if params.confirms_speculation
+        }
+        self._user_turn_stop_votes = confirmed
+        if confirmed:
+            await self._trigger_user_turn_inference_triggered(next(iter(confirmed)))
+
     async def _clear_user_turn_stop_votes(self):
         if not self._user_turn_stop_votes:
             return
@@ -391,6 +415,9 @@ class UserTurnController(BaseObject):
 
     async def _on_user_turn_speculation_cancelled(self, strategy: BaseUserTurnStopStrategy):
         await self._call_event_handler("on_user_turn_speculation_cancelled")
+        # Every strategy learns the speculation is gone, as when its service
+        # withdraws it.
+        await self.process_frame(UserTurnResponseCancelFrame())
 
     async def _on_user_turn_started(
         self,
@@ -423,6 +450,7 @@ class UserTurnController(BaseObject):
             return
 
         self._user_turn = True
+        self._user_turn_speculating = False
         self._user_turn_stop_timeout_event.set()
 
         # Notify every strategy that the turn has started. Start strategies
@@ -450,16 +478,23 @@ class UserTurnController(BaseObject):
         # finalization never arrives) still times out and finalizes.
         self._user_turn_stop_timeout_event.set()
 
+        self._user_turn_speculating = speculation is not None
         await self._call_event_handler("on_user_turn_inference_triggered", strategy, speculation)
 
     async def _vote_user_turn_stop(
         self, strategy: BaseUserTurnStopStrategy, params: UserTurnStoppedParams
     ):
-        # A vote cast while the user speaks is stale, as a turn end would be.
-        if not self._user_turn or self._user_speaking:
+        # A vote counts while the user speaks, as when a service still hears
+        # them while the LLM judges an eager answer. Only the turn end waits
+        # for them to stop, and new speech clears the votes.
+        if not self._user_turn:
             return
 
         self._user_turn_stop_votes[strategy] = params
+        # A confirmation that crossed the withdrawal of its speculation
+        # confirms nothing, the same as one cast before it.
+        if params.confirms_speculation and not self._user_turn_speculating:
+            await self._handle_user_turn_response_cancel()
 
         if len(self._user_turn_stop_votes) == len(self._user_turn_strategies.stop or []):
             await self._trigger_user_turn_stop(strategy, self._user_turn_stop_params())
@@ -491,6 +526,7 @@ class UserTurnController(BaseObject):
 
         self._user_turn = False
         self._user_turn_stop_votes.clear()
+        self._user_turn_speculating = False
         self._user_turn_stop_timeout_event.set()
 
         # Notify every strategy that the turn has ended. Stop strategies reset

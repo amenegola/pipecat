@@ -20,10 +20,11 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     UserTurnInferenceCompletedFrame,
+    UserTurnResponseCancelFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
-from pipecat.turns.types import ProcessFrameResult
+from pipecat.turns.types import ProcessFrameResult, UserTurnSpeculation
 from pipecat.turns.user_start import (
     BaseUserTurnStartStrategy,
     ExternalUserTurnStartStrategy,
@@ -923,6 +924,12 @@ class VotingStopStrategy(BaseUserTurnStopStrategy):
     async def vote(self, **kwargs):
         await self.trigger_user_turn_stopped(**kwargs)
 
+    async def speculate(self):
+        await self.trigger_user_turn_inference_triggered(speculation=UserTurnSpeculation("Hi"))
+
+    async def confirm(self):
+        await self.trigger_user_turn_finalized(confirms_speculation=True)
+
 
 class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
     """By default the turn ends once every stop strategy has voted."""
@@ -991,7 +998,7 @@ class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
         await first.vote()
         self.assertEqual([s for s, _ in self.stops], [first])
 
-    async def test_a_vote_while_the_user_speaks_is_dropped(self):
+    async def test_a_vote_cast_while_the_user_speaks_counts(self):
         first, last = VotingStopStrategy(), VotingStopStrategy()
         await self._start([first, last])
         await self.controller.process_frame(VADUserStartedSpeakingFrame())
@@ -1000,7 +1007,57 @@ class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
 
         await last.vote()
 
+        self.assertEqual([s for s, _ in self.stops], [last])
+
+    async def test_the_turn_does_not_end_while_the_user_speaks(self):
+        first, last = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([first, last])
+        await self.controller.process_frame(VADUserStartedSpeakingFrame())
+
+        await first.vote()
+        await last.vote()
+
         self.assertEqual(self.stops, [])
+
+    async def test_a_cancelled_answer_voids_the_votes_cast_on_it(self):
+        first, last = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([first, last])
+        await self._speak()
+        await first.vote()
+
+        await self.controller.process_frame(UserTurnResponseCancelFrame())
+        await last.vote()
+
+        self.assertEqual(self.stops, [])
+
+    async def test_a_confirmation_outlives_the_answer_it_confirmed(self):
+        """The turn's answer runs again for a vote that confirmed a cancelled one."""
+        confirming, judge = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([confirming, judge])
+        inferences = []
+
+        @self.controller.event_handler("on_user_turn_inference_triggered")
+        async def on_user_turn_inference_triggered(controller, strategy, speculation):
+            inferences.append(strategy)
+
+        await self._speak()
+        await confirming.speculate()
+        await confirming.confirm()
+        await self.controller.process_frame(UserTurnResponseCancelFrame())
+        self.assertEqual(inferences, [confirming, confirming])
+
+        await judge.vote()
+        _, params = self.stops[0]
+        self.assertFalse(params.confirms_speculation)
+
+    async def test_a_withdrawn_speculation_reaches_every_stop_strategy(self):
+        withdrawing, other = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([withdrawing, other])
+        await self._speak()
+
+        await withdrawing.trigger_user_turn_speculation_cancelled()
+
+        self.assertIsInstance(other.frames[-1], UserTurnResponseCancelFrame)
 
     async def test_each_turn_needs_its_own_votes(self):
         """Votes don't carry over into a turn that starts without speech frames."""
@@ -1079,12 +1136,33 @@ class TestStopStrategiesVote(unittest.IsolatedAsyncioTestCase):
         await self._start([announced, confirming])
         await self._speak()
 
-        await announced.vote(enable_user_speaking_frames=False)
-        await confirming.trigger_user_turn_finalized(confirms_speculation=True)
+        await confirming.speculate()
+        await announced.trigger_user_turn_finalized(enable_user_speaking_frames=False)
+        await confirming.confirm()
 
         _, params = self.stops[0]
         self.assertFalse(params.enable_user_speaking_frames)
         self.assertTrue(params.confirms_speculation)
+
+    async def test_confirming_a_withdrawn_speculation_runs_the_turns_answer(self):
+        """A confirmation that crosses its speculation's withdrawal confirms nothing."""
+        confirming, judge = VotingStopStrategy(), VotingStopStrategy()
+        await self._start([confirming, judge])
+        inferences = []
+
+        @self.controller.event_handler("on_user_turn_inference_triggered")
+        async def on_user_turn_inference_triggered(controller, strategy, speculation):
+            inferences.append(speculation)
+
+        await self._speak()
+        await confirming.speculate()
+        await self.controller.process_frame(UserTurnResponseCancelFrame())
+        await confirming.confirm()
+        self.assertEqual([s is None for s in inferences], [False, True])
+
+        await judge.vote()
+        _, params = self.stops[0]
+        self.assertFalse(params.confirms_speculation)
 
 
 if __name__ == "__main__":
